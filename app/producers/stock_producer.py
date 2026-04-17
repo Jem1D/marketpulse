@@ -28,17 +28,13 @@ import yfinance as yf
 from confluent_kafka import Producer
 
 from app.schemas.stock import StockTickEvent
+from app.watchlist import get_effective_tickers
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 logger = logging.getLogger("stock_producer")
-
-WATCHED_TICKERS = [
-    "AAPL", "TSLA", "NVDA", "AMZN", "MSFT",
-    "GOOG", "META", "AMD", "GME", "NKE",
-]
 
 POLL_INTERVAL = int(os.getenv("STOCK_POLL_INTERVAL", "30"))
 
@@ -64,7 +60,7 @@ def create_producer() -> Producer:
     })
 
 
-def fetch_ticks() -> list[StockTickEvent]:
+def fetch_ticks(tickers: list[str]) -> list[StockTickEvent]:
     """Fetch current price data for all watched tickers individually.
 
     Uses .info instead of .fast_info because fast_info.previous_close
@@ -74,7 +70,7 @@ def fetch_ticks() -> list[StockTickEvent]:
     """
     events = []
 
-    for symbol in WATCHED_TICKERS:
+    for symbol in tickers:
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
@@ -111,14 +107,25 @@ def run():
     topic = os.getenv("KAFKA_TOPIC_STOCK_TICKS", "stock-ticks")
     producer = create_producer()
 
-    logger.info(
-        "Polling %d tickers every %ds → Kafka topic '%s'",
-        len(WATCHED_TICKERS), POLL_INTERVAL, topic,
-    )
+    logger.info("Polling stock ticks every %ds → Kafka topic '%s'", POLL_INTERVAL, topic)
 
     try:
         while True:
-            events = fetch_ticks()
+            processed: set[str] = set()
+            events: list[StockTickEvent] = []
+
+            while True:
+                tickers = get_effective_tickers()
+                pending = [symbol for symbol in tickers if symbol not in processed]
+                if not pending:
+                    break
+
+                logger.info("Stock cycle watchlist size: %d", len(tickers))
+                batch = fetch_ticks(pending)
+                events.extend(batch)
+
+                for symbol in pending:
+                    processed.add(symbol)
 
             for event in events:
                 producer.produce(

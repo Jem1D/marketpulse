@@ -1,4 +1,4 @@
-.PHONY: up down logs api-install api-run news-producer stock-producer correlation-detector research-agent db-init
+.PHONY: up down logs api-install api-run news-producer stock-producer correlation-detector research-agent db-init ollama-pull test-ollama
 
 up:
 	docker compose up -d
@@ -29,3 +29,10 @@ research-agent:
 
 db-init:
 	. .venv/bin/activate && python -m app.db.init_db
+
+ollama-pull:
+	ollama pull gemma3:4b
+	ollama pull nomic-embed-text
+
+test-ollama:
+	curl -s http://127.0.0.1:11434/api/chat -d '{"model":"gemma3:4b","messages":[{"role":"user","content":"Say OK in one word"}],"stream":false}' | python3 -c "import sys,json; print(json.load(sys.stdin)['message']['content'])"

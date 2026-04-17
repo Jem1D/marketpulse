@@ -21,7 +21,7 @@ class CorrelationReport(Base):
     news_count = Column(Integer, nullable=False)
     headlines = Column(ARRAY(String), default=[])
     summary = Column(Text, nullable=False)
-    embedding = Column(Vector(1536))
+    embedding = Column(Vector(768))
     detected_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(
         DateTime(timezone=True),

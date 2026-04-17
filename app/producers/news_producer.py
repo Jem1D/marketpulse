@@ -29,17 +29,13 @@ import yfinance as yf
 from confluent_kafka import Producer
 
 from app.schemas.news import NewsEvent
+from app.watchlist import get_effective_tickers
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 logger = logging.getLogger("news_producer")
-
-WATCHED_TICKERS = [
-    "AAPL", "TSLA", "NVDA", "AMZN", "MSFT",
-    "GOOG", "META", "AMD", "GME", "NKE",
-]
 
 POLL_INTERVAL = int(os.getenv("NEWS_POLL_INTERVAL", "60"))
 
@@ -114,37 +110,45 @@ def run():
     seen_ids: set[str] = set()
     MAX_SEEN = 10_000
 
-    logger.info(
-        "Polling news for %d tickers every %ds → Kafka topic '%s'",
-        len(WATCHED_TICKERS), POLL_INTERVAL, topic,
-    )
+    logger.info("Polling news every %ds → Kafka topic '%s'", POLL_INTERVAL, topic)
 
     try:
         while True:
             total_new = 0
+            processed: set[str] = set()
 
-            for symbol in WATCHED_TICKERS:
-                articles = fetch_news(symbol)
+            while True:
+                tickers = get_effective_tickers()
+                pending = [symbol for symbol in tickers if symbol not in processed]
+                if not pending:
+                    break
 
-                for event in articles:
-                    if event.article_id in seen_ids:
-                        continue
+                logger.info("News cycle watchlist size: %d", len(tickers))
 
-                    producer.produce(
-                        topic=topic,
-                        key=event.to_kafka_key(),
-                        value=event.model_dump_json(),
-                        callback=delivery_callback,
-                    )
-                    logger.info(
-                        "→ %s | %s | %s",
-                        event.ticker, event.publisher, event.title[:90],
-                    )
-                    seen_ids.add(event.article_id)
-                    total_new += 1
+                for symbol in pending:
+                    articles = fetch_news(symbol)
 
-                producer.poll(0)
-                time.sleep(0.5)
+                    for event in articles:
+                        if event.article_id in seen_ids:
+                            continue
+
+                        producer.produce(
+                            topic=topic,
+                            key=event.to_kafka_key(),
+                            value=event.model_dump_json(),
+                            callback=delivery_callback,
+                        )
+                        logger.info(
+                            "→ %s | %s | %s",
+                            event.ticker, event.publisher, event.title[:90],
+                        )
+                        seen_ids.add(event.article_id)
+                        total_new += 1
+
+                    processed.add(symbol)
+
+                    producer.poll(0)
+                    time.sleep(0.5)
 
             if len(seen_ids) > MAX_SEEN:
                 seen_ids.clear()

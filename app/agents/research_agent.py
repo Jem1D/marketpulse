@@ -1,24 +1,17 @@
 """
-LLM Research Agent — the final brain of MarketPulse.
+LLM Research Agent — uses local Ollama (no API keys, no cloud rate limits).
 
-Consumes correlation events from Kafka, then:
-  1. Builds a context prompt from the ticker, price move, and headlines.
-  2. Calls Gemini via its REST API to generate a concise, human-readable
-     explanation of what happened and why.
-  3. Generates an embedding of the summary for vector search.
-  4. Stores everything in Postgres (correlation_reports table).
+  1. gemma3:4b (or OLLAMA_CHAT_MODEL) — summary from headlines + price
+  2. nomic-embed-text (or OLLAMA_EMBED_MODEL) — 768-dim vectors for pgvector
 
-Key concepts:
-  - We call Gemini's REST API directly with httpx (already installed)
-    to avoid OpenAI SDK auth conflicts.
-  - Embeddings are 1536-dim vectors stored in pgvector for semantic search.
+Requires: `ollama serve` running, models pulled (see Makefile ollama-pull).
 """
 
 import logging
 import os
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 import httpx
 from confluent_kafka import Consumer
@@ -41,29 +34,55 @@ summary explaining what happened and why the stock moved.
 Be specific about the causal link between the news and the price move. 
 Write for an informed reader — no filler, no disclaimers."""
 
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 
 
 def create_consumer() -> Consumer:
     bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     return Consumer({
         "bootstrap.servers": bootstrap,
-        "group.id": "research-agent",
-        "auto.offset.reset": "earliest",
+        "group.id": "research-agent-ollama",
+        "auto.offset.reset": "latest",
         "enable.auto.commit": True,
     })
 
 
 def init_db():
-    """Ensure pgvector extension and tables exist."""
     with engine.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.commit()
+    from app.db.init_db import _drop_correlation_reports_if_wrong_embedding_dim
+    _drop_correlation_reports_if_wrong_embedding_dim()
     Base.metadata.create_all(bind=engine)
 
 
-def generate_summary(client: httpx.Client, api_key: str, event: CorrelationEvent) -> str:
-    """Call Gemini REST API to produce a human-readable explanation."""
+def ollama_chat(client: httpx.Client, model: str, system: str, user: str) -> str:
+    url = f"{OLLAMA_BASE}/api/chat"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "options": {"temperature": 0.3},
+    }
+    resp = client.post(url, json=payload, timeout=120.0)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["message"]["content"].strip()
+
+
+def ollama_embed(client: httpx.Client, model: str, prompt: str) -> list[float]:
+    url = f"{OLLAMA_BASE}/api/embeddings"
+    payload = {"model": model, "prompt": prompt}
+    resp = client.post(url, json=payload, timeout=120.0)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["embedding"]
+
+
+def generate_summary(client: httpx.Client, chat_model: str, event: CorrelationEvent) -> str:
     direction = "rose" if event.price_change_pct >= 0 else "fell"
     headlines_text = "\n".join(f"- {h}" for h in event.headlines)
 
@@ -76,47 +95,14 @@ Recent headlines:
 
 Explain what happened and why the stock moved."""
 
-    model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-    url = f"{GEMINI_API_BASE}/models/{model}:generateContent?key={api_key}"
-
-    payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": [{"parts": [{"text": user_prompt}]}],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 300,
-        },
-    }
-
-    resp = client.post(url, json=payload)
-    resp.raise_for_status()
-    data = resp.json()
-
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    return ollama_chat(client, chat_model, SYSTEM_PROMPT, user_prompt)
 
 
-def generate_embedding(client: httpx.Client, api_key: str, text: str) -> list[float]:
-    """Create a 1536-dim embedding via Gemini's embedding API."""
-    url = f"{GEMINI_API_BASE}/models/gemini-embedding-001:embedContent?key={api_key}"
-
-    payload = {
-        "content": {"parts": [{"text": text}]},
-        "outputDimensionality": 1536,
-    }
-
-    resp = client.post(url, json=payload)
-    resp.raise_for_status()
-    data = resp.json()
-
-    return data["embedding"]["values"]
+def generate_embedding(client: httpx.Client, embed_model: str, summary: str) -> list[float]:
+    return ollama_embed(client, embed_model, summary)
 
 
-def store_report(
-    event: CorrelationEvent,
-    summary: str,
-    embedding: list[float],
-):
-    """Persist the correlation report + embedding to Postgres."""
+def store_report(event: CorrelationEvent, summary: str, embedding: list[float]):
     session = SessionLocal()
     try:
         report = models.CorrelationReport(
@@ -144,15 +130,17 @@ def run():
     consumer = create_consumer()
     consumer.subscribe([topic])
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key or api_key == "replace_me":
-        logger.error("GEMINI_API_KEY not set in .env — cannot start research agent")
-        return
+    chat_model = os.getenv("OLLAMA_CHAT_MODEL", "gemma3:4b")
+    embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
-    http_client = httpx.Client(timeout=30.0)
+    http_client = httpx.Client(timeout=120.0)
 
     init_db()
-    logger.info("Research agent started (Gemini) — consuming '%s'", topic)
+    logger.info(
+        "Research agent (Ollama) — chat=%s embed=%s — topic '%s'",
+        chat_model, embed_model, topic,
+    )
+    logger.info("Waiting for NEW correlation events (offset=latest)…")
 
     try:
         while True:
@@ -171,16 +159,16 @@ def run():
                     event.ticker, direction, abs(event.price_change_pct), event.news_count,
                 )
 
-                summary = generate_summary(http_client, api_key, event)
+                summary = generate_summary(http_client, chat_model, event)
                 logger.info("Summary: %s", summary)
 
-                embedding = generate_embedding(http_client, api_key, summary)
+                embedding = generate_embedding(http_client, embed_model, summary)
                 logger.info("Embedding generated (%d dimensions)", len(embedding))
 
                 store_report(event, summary, embedding)
 
             except Exception as e:
-                logger.error("Failed to process correlation event: %s", e)
+                logger.error("Failed to process event: %s", e)
 
     except KeyboardInterrupt:
         logger.info("Shutting down…")
