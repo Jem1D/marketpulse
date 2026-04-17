@@ -19,7 +19,7 @@ from confluent_kafka import Consumer
 from app.db import models  # noqa: F401
 from app.db.session import SessionLocal, engine, Base
 from app.schemas.correlation import CorrelationEvent
-from sqlalchemy import text
+from sqlalchemy import desc, text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +35,8 @@ Be specific about the causal link between the news and the price move.
 Write for an informed reader — no filler, no disclaimers."""
 
 OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+PRICE_DELTA_MIN = float(os.getenv("REPORT_MIN_PRICE_DELTA", "0.10"))
+PCT_DELTA_MIN = float(os.getenv("REPORT_MIN_PCT_DELTA", "0.15"))
 
 
 def create_consumer() -> Consumer:
@@ -102,6 +104,36 @@ def generate_embedding(client: httpx.Client, embed_model: str, summary: str) -> 
     return ollama_embed(client, embed_model, summary)
 
 
+def should_store_report(event: CorrelationEvent, summary: str) -> bool:
+    """Store only materially updated insights to avoid repeated UI noise."""
+    session = SessionLocal()
+    try:
+        previous = (
+            session.query(models.CorrelationReport)
+            .filter(models.CorrelationReport.ticker == event.ticker)
+            .order_by(desc(models.CorrelationReport.detected_at), desc(models.CorrelationReport.id))
+            .first()
+        )
+        if previous is None:
+            return True
+
+        summary_changed = (previous.summary or "").strip() != (summary or "").strip()
+        headlines_changed = list(previous.headlines or []) != list(event.headlines or [])
+        news_count_changed = previous.news_count != event.news_count
+        price_moved = abs((previous.price or 0) - event.price) >= PRICE_DELTA_MIN
+        pct_moved = abs((previous.price_change_pct or 0) - event.price_change_pct) >= PCT_DELTA_MIN
+
+        return any([
+            summary_changed,
+            headlines_changed,
+            news_count_changed,
+            price_moved,
+            pct_moved,
+        ])
+    finally:
+        session.close()
+
+
 def store_report(event: CorrelationEvent, summary: str, embedding: list[float]):
     session = SessionLocal()
     try:
@@ -161,6 +193,10 @@ def run():
 
                 summary = generate_summary(http_client, chat_model, event)
                 logger.info("Summary: %s", summary)
+
+                if not should_store_report(event, summary):
+                    logger.info("No material update for $%s, skipping duplicate report", event.ticker)
+                    continue
 
                 embedding = generate_embedding(http_client, embed_model, summary)
                 logger.info("Embedding generated (%d dimensions)", len(embedding))

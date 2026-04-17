@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MarketPulse Console</title>
+    <link rel="stylesheet" href="/static/dashboard.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+
+    <main class="layout">
+      <header class="hero">
+        <div>
+          <p class="kicker">MarketPulse</p>
+          <h1>Signal Console</h1>
+          <p class="subtitle">Track latest correlation summaries and manage your live watchlist in one place.</p>
+        </div>
+        <div class="hero-actions">
+          <button id="refreshReportsBtn" class="btn btn-primary">Refresh Summaries</button>
+          <button id="refreshWatchlistBtn" class="btn btn-ghost">Refresh Watchlist</button>
+        </div>
+      </header>
+
+      <section class="panel reports-panel">
+        <div class="panel-head">
+          <h2>Summary Feed</h2>
+          <div class="inline-controls">
+            <label for="tickerFilter">Ticker</label>
+            <input id="tickerFilter" placeholder="AAPL" maxlength="10" />
+            <button id="applyFilterBtn" class="btn btn-small">Apply</button>
+            <button id="clearFilterBtn" class="btn btn-small btn-ghost">Clear</button>
+          </div>
+        </div>
+        <p id="reportsMeta" class="muted">Loading reports...</p>
+        <div id="reportsList" class="cards"></div>
+      </section>
+
+      <section class="panel watchlist-panel">
+        <div class="panel-head">
+          <h2>Watchlist Manager</h2>
+        </div>
+
+        <form id="addTickerForm" class="ticker-form">
+          <label for="newTickerInput">Add ticker</label>
+          <div class="ticker-row">
+            <input id="newTickerInput" placeholder="NFLX" maxlength="10" required />
+            <button type="submit" class="btn btn-primary">Add</button>
+          </div>
+        </form>
+
+        <div class="group">
+          <h3>Effective Tickers</h3>
+          <div id="effectiveTickers" class="chips"></div>
+        </div>
+
+        <div class="group">
+          <h3>User Tickers (removable)</h3>
+          <div id="userTickers" class="chips chips-removable"></div>
+        </div>
+      </section>
+    </main>
+
+    <template id="reportCardTemplate">
+      <article class="card">
+        <div class="card-head">
+          <span class="ticker"></span>
+          <span class="move"></span>
+        </div>
+        <p class="summary"></p>
+        <div class="meta">
+          <span class="price"></span>
+          <span class="news-count"></span>
+          <span class="detected"></span>
+        </div>
+        <ul class="headlines"></ul>
+      </article>
+    </template>
+
+    <script src="/static/dashboard.js" defer></script>
+  </body>
+</html>

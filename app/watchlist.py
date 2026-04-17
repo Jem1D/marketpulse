@@ -28,7 +28,12 @@ def normalize_ticker(raw: str) -> str:
 
 def _watchlist_file() -> Path:
     configured = os.getenv("WATCHLIST_FILE", "app/data/user_tickers.json")
-    return Path(configured)
+    path = Path(configured)
+    if path.is_absolute():
+        return path
+
+    project_root = Path(__file__).resolve().parents[1]
+    return project_root / path
 
 
 def _parse_extra_tickers() -> list[str]:
