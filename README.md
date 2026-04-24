@@ -4,9 +4,6 @@ MarketPulse is a real-time news and stock correlation engine.
 
 It ingests live stock prices and financial headlines, detects high-signal moves, generates concise AI explanations, and serves results through an API and dashboard.
 
-## Important note
-
-The active pipeline does not use Reddit data. Current runtime flow is news + stock only.
 
 ## What it does
 
