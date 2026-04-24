@@ -70,6 +70,14 @@ make api-run
 
 6) Open UI
 
+To view the dashboard, start the API first:
+
+```bash
+make api-run
+```
+
+Then open:
+
 - Dashboard: `http://localhost:8000/ui`
 - Health: `http://localhost:8000/health`
 
