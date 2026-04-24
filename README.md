@@ -81,6 +81,10 @@ Then open:
 - Dashboard: `http://localhost:8000/ui`
 - Health: `http://localhost:8000/health`
 
+## UI Preview
+
+![MarketPulse Dashboard](app/assets/marketpulse.png)
+
 ## API endpoints
 
 ### Reports
